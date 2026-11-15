@@ -6,7 +6,7 @@ import {
   MoreHorizontal, Pencil, Plus, Search, Settings, Sparkles, Trash2,
   Utensils, X, BarChart3, BrainCircuit, AlertCircle, Upload, Package,
   RefreshCw, Wheat, ShieldCheck, Sprout, LockKeyhole, Mail, Building2,
-  UserRound, Eye, EyeOff, Clock3, CircleHelp
+  UserRound, Eye, EyeOff, Clock3, CircleHelp, Loader2
 } from 'lucide-react';
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer,
@@ -29,7 +29,7 @@ const pageTitles = {
   overview: ['Overview', 'Your canteen activity will appear here as you add data.'],
   foods: ['Food items', 'Create and manage the food items your canteen prepares.'],
   data: ['Historical data', 'Upload your canteen dataset and review its structure.'],
-  predict: ['Predict demand', 'Prepare a demand forecast when the ML model is connected.'],
+  predict: ['Predict demand', 'Check model readiness and generate forecasts using its saved inputs.'],
   records: ['Actual records', 'Record preparation, consumption, and leftover quantities.'],
   reports: ['Reports & analytics', 'Explore demand and wastage patterns from your records.'],
   settings: ['Settings', 'Manage your canteen profile and workspace preferences.'],
@@ -65,6 +65,9 @@ function App() {
   const [uploadRows, setUploadRows] = useState([]);
   const [uploadName, setUploadName] = useState('');
   const [uploadError, setUploadError] = useState('');
+  const [uploadFile, setUploadFile] = useState(null);
+  const [trainingStatus, setTrainingStatus] = useState('idle');
+  const [trainingMessage, setTrainingMessage] = useState('');
   const [profile, setProfile] = useState({ canteen: '', admin: '', email: '', location: '' });
   const [recordsSearch, setRecordsSearch] = useState('');
   const fileRef = useRef(null);
@@ -94,7 +97,10 @@ function App() {
   const parseFile = async (file) => {
     if (!file) return;
     setUploadError('');
+    setUploadFile(null);
     setUploadName(file.name);
+    setTrainingStatus('idle');
+    setTrainingMessage('');
     try {
       let rows = [];
       if (file.name.toLowerCase().endsWith('.csv')) {
@@ -112,10 +118,40 @@ function App() {
       }
       if (!rows.length) throw new Error('This file does not contain any data rows.');
       setUploadRows(rows);
+      setUploadFile(file);
       notify(`${rows.length.toLocaleString('en-IN')} rows loaded for preview.`);
     } catch (error) {
       setUploadRows([]);
       setUploadError(error.message || 'Could not read this file.');
+    }
+  };
+
+  const trainModel = async () => {
+    if (!uploadFile || !uploadFile.name.toLowerCase().endsWith('.csv')) {
+      setTrainingStatus('error');
+      setTrainingMessage('Choose a CSV file to train the model.');
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', uploadFile);
+    setTrainingStatus('loading');
+    setTrainingMessage('');
+
+    try {
+      const response = await fetch('http://localhost:8000/train/test_canteen_1', {
+        method: 'POST',
+        body: formData,
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.detail || 'Training failed. Please try again.');
+      }
+      setTrainingStatus('success');
+      setTrainingMessage(result.message || 'Model trained successfully.');
+    } catch (error) {
+      setTrainingStatus('error');
+      setTrainingMessage(error.message || 'Training failed. Please try again.');
     }
   };
 
@@ -151,6 +187,7 @@ function App() {
     setRecords([]);
     setUploadRows([]);
     setUploadName('');
+    setUploadFile(null);
     setProfile({ canteen: '', admin: '', email: '', location: '' });
     setPhase('landing');
     setProgress(0);
@@ -211,8 +248,8 @@ function App() {
         </div>
         {activePage === 'overview' && <Overview records={records} foods={foods} go={go} />}
         {activePage === 'foods' && <FoodsPage foods={filteredFoods} allFoodsCount={foods.length} search={search} setSearch={setSearch} onEdit={setFoodModal} onDelete={deleteFood} onAdd={() => setFoodModal({ name: '', category: 'Breakfast', unit: 'portions', active: true })} />}
-        {activePage === 'data' && <DataPage fileRef={fileRef} parseFile={parseFile} uploadName={uploadName} uploadRows={uploadRows} uploadError={uploadError} clear={() => { setUploadRows([]); setUploadName(''); setUploadError(''); if (fileRef.current) fileRef.current.value = ''; }} />}
-        {activePage === 'predict' && <PredictPage foods={foods} />}
+        {activePage === 'data' && <DataPage fileRef={fileRef} parseFile={parseFile} uploadName={uploadName} uploadRows={uploadRows} uploadError={uploadError} uploadFile={uploadFile} trainingStatus={trainingStatus} trainingMessage={trainingMessage} onTrain={trainModel} clear={() => { setUploadRows([]); setUploadName(''); setUploadError(''); setUploadFile(null); setTrainingStatus('idle'); setTrainingMessage(''); if (fileRef.current) fileRef.current.value = ''; }} />}
+        {activePage === 'predict' && <PredictPage />}
         {activePage === 'records' && <RecordsPage records={filteredRecords} search={recordsSearch} setSearch={setRecordsSearch} onAdd={() => setRecordModal(true)} />}
         {activePage === 'reports' && <ReportsPage records={records} />}
         {activePage === 'settings' && <SettingsPage profile={profile} setProfile={setProfile} notify={notify} />}
@@ -366,34 +403,112 @@ function FoodsPage({ foods, allFoodsCount, search, setSearch, onEdit, onDelete, 
     </div><div className="table-bottom"><span>{allFoodsCount ? `Showing ${rows.length} of ${allFoodsCount} food items` : 'No food items added'}</span><span>Menu management <span className="footer-dot">·</span> Current session</span></div></div>;
 }
 
-function DataPage({ fileRef, parseFile, uploadName, uploadRows, uploadError, clear }) {
+function DataPage({ fileRef, parseFile, uploadName, uploadRows, uploadError, uploadFile, trainingStatus, trainingMessage, onTrain, clear }) {
   const [drag, setDrag] = useState(false);
   const columns = uploadRows.length ? Object.keys(uploadRows[0]) : [];
   return <div className="data-layout"><div className="panel upload-panel"><div className="panel-heading"><div><h3>Import historical records</h3><p>Choose a dataset from your canteen to preview its structure.</p></div><div className="file-type-icon"><FileSpreadsheet size={20} /></div></div>
-    <div className={`drop-zone ${drag ? 'dragging' : ''}`} onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)} onDrop={(e) => { e.preventDefault(); setDrag(false); parseFile(e.dataTransfer.files?.[0]); }} onClick={() => fileRef.current?.click()} role="button" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && fileRef.current?.click()}><input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" hidden onChange={(e) => parseFile(e.target.files?.[0])} /><div className="upload-icon"><CloudUpload size={24} /></div><strong>Drop your dataset here, or <span>browse files</span></strong><p>Supported formats: CSV, XLSX, XLS · Excel uses the first sheet</p><button className="btn btn-soft" type="button"><Upload size={14} /> Choose file</button></div>
+    <div className={`drop-zone ${drag ? 'dragging' : ''}`} onDragOver={(e) => { e.preventDefault(); if (trainingStatus !== 'loading') setDrag(true); }} onDragLeave={() => setDrag(false)} onDrop={(e) => { e.preventDefault(); setDrag(false); if (trainingStatus !== 'loading') parseFile(e.dataTransfer.files?.[0]); }} onClick={() => trainingStatus !== 'loading' && fileRef.current?.click()} role="button" tabIndex={0} aria-disabled={trainingStatus === 'loading'} onKeyDown={(e) => e.key === 'Enter' && trainingStatus !== 'loading' && fileRef.current?.click()}><input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" hidden disabled={trainingStatus === 'loading'} onChange={(e) => parseFile(e.target.files?.[0])} /><div className="upload-icon"><CloudUpload size={24} /></div><strong>Drop your dataset here, or <span>browse files</span></strong><p>Supported formats: CSV, XLSX, XLS · Excel uses the first sheet</p><button className="btn btn-soft" type="button" disabled={trainingStatus === 'loading'}><Upload size={14} /> Choose file</button></div>
     {uploadError && <div className="inline-error"><AlertCircle size={15} />{uploadError}</div>}
-    {uploadName && uploadRows.length > 0 && <div className="uploaded-file"><div className="uploaded-file-icon"><FileSpreadsheet size={19} /></div><div className="uploaded-file-meta"><strong>{uploadName}</strong><span>{uploadRows.length.toLocaleString('en-IN')} rows · {columns.length} columns · Preview ready</span></div><button className="icon-btn" onClick={clear} title="Remove file"><X size={17} /></button></div>}
+    {uploadName && uploadRows.length > 0 && <div className="uploaded-file"><div className="uploaded-file-icon"><FileSpreadsheet size={19} /></div><div className="uploaded-file-meta"><strong>{uploadName}</strong><span>{uploadRows.length.toLocaleString('en-IN')} rows · {columns.length} columns · Preview ready</span></div><button className="icon-btn" onClick={clear} title="Remove file" disabled={trainingStatus === 'loading'}><X size={17} /></button></div>}
+    {uploadFile && <div className="training-actions"><button className="btn btn-primary" type="button" onClick={onTrain} disabled={trainingStatus === 'loading' || !uploadFile.name.toLowerCase().endsWith('.csv')} aria-busy={trainingStatus === 'loading'}>{trainingStatus === 'loading' ? <><Loader2 className="training-spinner" size={15} /> Training...</> : <>Train / Submit <ArrowRight size={15} /></>}</button>{!uploadFile.name.toLowerCase().endsWith('.csv') && <span className="training-note">Model training accepts CSV files only.</span>}</div>}
+    {trainingMessage && <div className={`training-status training-${trainingStatus}`} role={trainingStatus === 'error' ? 'alert' : 'status'}>{trainingStatus === 'error' ? <AlertCircle size={15} /> : <CheckCircle2 size={15} />}{trainingMessage}</div>}
     <div className="upload-hint"><Lightbulb size={16} /><div><strong>Suggested dataset fields</strong><p>Date, Food Item, Meal Type, Prepared Quantity, Sold / Consumed Quantity, Previous-day Sales, and Event. The final fields will be confirmed when the ML model is prepared.</p></div></div>
-  </div><div className="panel schema-panel"><div className="panel-heading"><div><h3>Recommended data fields</h3><p>A suggested structure for your project</p></div></div><div className="schema-list">{[['Date','Date of food service'],['Food Item','Name of the food item'],['Meal Type','Breakfast, lunch, snacks, or dinner'],['Prepared Quantity','Quantity prepared'],['Sold / Consumed','Quantity consumed or sold'],['Previous-day Sales','Previous service-day quantity'],['Event','Special event or regular day']].map(([name, desc], index) => <div className="schema-row" key={name}><span className="schema-index">{String(index + 1).padStart(2, '0')}</span><div><strong>{name}</strong><small>{desc}</small></div><span className="schema-required">Suggested</span></div>)}</div><div className="schema-foot"><AlertCircle size={14} /> Uploaded rows are only previewed here; database import is not connected yet.</div></div>
+  </div><div className="panel schema-panel"><div className="panel-heading"><div><h3>Recommended data fields</h3><p>A suggested structure for your project</p></div></div><div className="schema-list">{[['Date','Date of food service'],['Food Item','Name of the food item'],['Meal Type','Breakfast, lunch, snacks, or dinner'],['Prepared Quantity','Quantity prepared'],['Sold / Consumed','Quantity consumed or sold'],['Previous-day Sales','Previous service-day quantity'],['Event','Special event or regular day']].map(([name, desc], index) => <div className="schema-row" key={name}><span className="schema-index">{String(index + 1).padStart(2, '0')}</span><div><strong>{name}</strong><small>{desc}</small></div><span className="schema-required">Suggested</span></div>)}</div><div className="schema-foot"><AlertCircle size={14} /> CSV training sends the selected file to the model API; rows are previewed here.</div></div>
     {uploadRows.length > 0 && <div className="panel preview-panel"><div className="panel-heading"><div><h3>Dataset preview</h3><p>Showing the first 8 rows from {uploadName}</p></div><span className="preview-count">{uploadRows.length} rows</span></div><div className="table-wrap"><table className="preview-table"><thead><tr>{columns.slice(0, 8).map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{uploadRows.slice(0, 8).map((row, index) => <tr key={index}>{columns.slice(0, 8).map((column) => <td key={column}>{String(row[column] ?? '—')}</td>)}</tr>)}</tbody></table></div></div>}
   </div>;
 }
 
-function PredictPage({ foods }) {
-  const activeFoods = foods.filter((food) => food.active);
-  const [form, setForm] = useState({ date: '', food: '', meal: '', previous: '', diners: '', event: '' });
-  const update = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
-  return <div className="predict-layout"><div className="panel predict-form-panel"><div className="panel-heading"><div><h3>Meal information</h3><p>The input form is prepared for the future prediction API.</p></div><span className="step-count">ML CONNECTION PENDING</span></div><form className="form-grid" onSubmit={(e) => e.preventDefault()}>
-    <label className="field"><span>Prediction date</span><div className="input-with-icon"><CalendarDays size={16} /><input type="date" value={form.date} onChange={(e) => update('date', e.target.value)} /></div></label>
-    <label className="field"><span>Food item</span>{activeFoods.length ? <select value={form.food} onChange={(e) => update('food', e.target.value)}><option value="">Select a food item</option>{activeFoods.map((food) => <option key={food.id} value={food.name}>{food.name}</option>)}</select> : <input value={form.food} onChange={(e) => update('food', e.target.value)} placeholder="Add a food item first" />}</label>
-    <label className="field"><span>Meal type</span><select value={form.meal} onChange={(e) => update('meal', e.target.value)}><option value="">Select meal type</option><option>Breakfast</option><option>Lunch</option><option>Snacks</option><option>Dinner</option></select></label>
-    <label className="field"><span>Previous-day sales / consumption</span><div className="input-suffix"><input type="number" min="0" value={form.previous} onChange={(e) => update('previous', e.target.value)} placeholder="Enter quantity" /><span>portions</span></div></label>
-    <label className="field"><span>Expected student count</span><div className="input-suffix"><input type="number" min="0" value={form.diners} onChange={(e) => update('diners', e.target.value)} placeholder="Enter count" /><span>people</span></div></label>
-    <label className="field"><span>Special event?</span><select value={form.event} onChange={(e) => update('event', e.target.value)}><option value="">Select an option</option><option>No</option><option>Yes</option></select></label>
-    <div className="form-note"><AlertCircle size={16} /><span>Predictions will be enabled after the Random Forest model and its Flask API are connected. No estimated values are generated in this frontend version.</span></div>
-    <button className="btn btn-primary predict-submit" type="button" disabled><Sparkles size={16} /> Generate prediction <ArrowRight size={15} /></button>
-  </form></div>
-    <div className="prediction-side"><div className="panel prediction-result"><div className="result-top"><span className="result-icon"><BrainCircuit size={19} /></span><span className="result-tag">RANDOM FOREST MODEL</span></div><div className="result-empty"><div className="empty-brain"><BrainCircuit size={29} /></div><strong>Prediction will appear here</strong><p>Once the trained model is connected, your demand estimate and recommended preparation quantity will be shown in this space.</p></div></div><div className="model-note"><div className="model-note-icon"><Clock3 size={16} /></div><div><strong>Waiting for model integration</strong><p>The form is a frontend layout only. It does not calculate or display mock predictions.</p></div></div></div>
+function PredictPage() {
+  const [modelStatus, setModelStatus] = useState('loading');
+  const [modelError, setModelError] = useState('');
+  const [columns, setColumns] = useState([]);
+  const [featureColumns, setFeatureColumns] = useState([]);
+  const [targetColumn, setTargetColumn] = useState('');
+  const [form, setForm] = useState({});
+  const [predicting, setPredicting] = useState(false);
+  const [prediction, setPrediction] = useState(null);
+  const [predictionError, setPredictionError] = useState('');
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch('http://localhost:8000/models/test_canteen_1', { signal: controller.signal })
+      .then(async (response) => {
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.detail || 'Could not check model status.');
+        }
+        if (!result.ready) {
+          setModelStatus('missing');
+          return;
+        }
+        setColumns(result.columns || []);
+        setFeatureColumns(result.feature_columns || []);
+        setTargetColumn(result.target_column || '');
+        setModelStatus('ready');
+      })
+      .catch((error) => {
+        if (error.name === 'AbortError') return;
+        setModelError(error.message || 'Could not check model status.');
+        setModelStatus('error');
+      });
+
+    return () => controller.abort();
+  }, []);
+
+  const submitPrediction = async (event) => {
+    event.preventDefault();
+    setPredicting(true);
+    setPrediction(null);
+    setPredictionError('');
+
+    try {
+      const response = await fetch('http://localhost:8000/predict/test_canteen_1', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          features: featureColumns.map((column) => Number(form[column])),
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.detail || 'Could not generate a prediction.');
+      }
+      setPrediction(result.predicted_quantity);
+    } catch (error) {
+      setPredictionError(error.message || 'Could not generate a prediction.');
+    } finally {
+      setPredicting(false);
+    }
+  };
+
+  const modelStatusLabel = {
+    loading: 'Checking model...',
+    ready: 'Model Ready',
+    missing: 'Model Not Found',
+    error: 'Model Status Unavailable',
+  }[modelStatus];
+
+  return <div className="predict-layout">
+    <div className="panel predict-form-panel">
+      <div className="panel-heading"><div><h3>Meal information</h3><p>Inputs are based on the saved model's feature columns.</p></div><span className={`step-count model-state-${modelStatus}`}>{modelStatusLabel}</span></div>
+      {modelStatus === 'loading' && <div className="model-feedback" role="status"><Loader2 className="training-spinner" size={16} /> Checking saved model...</div>}
+      {modelStatus === 'missing' && <div className="model-feedback model-feedback-warning" role="status"><AlertCircle size={16} /> No model is saved for test_canteen_1. Train a model before making predictions.</div>}
+      {modelStatus === 'error' && <div className="model-feedback model-feedback-error" role="alert"><AlertCircle size={16} />{modelError}</div>}
+      {modelStatus === 'ready' && <>
+        <div className="saved-columns" aria-label="Saved model columns"><strong>Saved columns</strong><div>{columns.map((column) => <span className="column-chip" key={column}>{column}</span>)}</div>{targetColumn && <small>Prediction target: {targetColumn}</small>}</div>
+        {featureColumns.length > 0 ? <form className="form-grid" onSubmit={submitPrediction}>
+          {featureColumns.map((column) => <label className="field" key={column}><span>{column}</span><input type="number" step="any" required value={form[column] ?? ''} onChange={(event) => setForm((previous) => ({ ...previous, [column]: event.target.value }))} placeholder={`Enter ${column}`} /></label>)}
+          <div className="form-note"><AlertCircle size={16} /><span>Enter a numeric value for each saved feature column.</span></div>
+          <button className="btn btn-primary predict-submit" type="submit" disabled={predicting} aria-busy={predicting}>{predicting ? <><Loader2 className="training-spinner" size={15} /> Generating...</> : <><Sparkles size={16} /> Generate prediction <ArrowRight size={15} /></>}</button>
+        </form> : <div className="model-feedback model-feedback-error" role="alert"><AlertCircle size={16} /> This saved model does not include feature column names, so its prediction form cannot be created.</div>}
+      </>}
+    </div>
+    <div className="prediction-side">
+      <div className="panel prediction-result"><div className="result-top"><span className="result-icon"><BrainCircuit size={19} /></span><span className="result-tag">LINEAR REGRESSION MODEL</span></div>
+        {prediction !== null ? <><div className="result-kicker">PREDICTED QUANTITY</div><div className="result-number">{fmt(prediction)}</div>{targetColumn && <div className="result-food">Target: {targetColumn}</div>}</> : <div className="result-empty"><div className="empty-brain"><BrainCircuit size={29} /></div><strong>{predictionError ? 'Prediction failed' : 'Prediction will appear here'}</strong><p>{predictionError || 'Submit model inputs to see a demand estimate.'}</p></div>}
+      </div>
+      <div className={`model-note ${modelStatus === 'ready' ? 'model-note-ready' : ''}`}><div className="model-note-icon">{modelStatus === 'ready' ? <CheckCircle2 size={16} /> : <Clock3 size={16} />}</div><div><strong>{modelStatusLabel}</strong><p>{modelStatus === 'ready' ? 'The saved model and its input columns are available for prediction.' : 'The prediction form unlocks when a saved model is found.'}</p></div></div>
+    </div>
   </div>;
 }
 
